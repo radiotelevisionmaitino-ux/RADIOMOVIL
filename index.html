@@ -1,382 +1,234 @@
 <!DOCTYPE html>
-
 <html lang="es">
-
 <head>
-
     <meta charset="UTF-8">
-
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-
     <title>MAITINO | UNIDAD MÓVIL PRO</title>
-
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
-
     <style>
-
         :root { --bg: #030305; --panel: #121216; --accent: #00ffaa; --danger: #ff1a1a; --border: rgba(255,255,255,0.1); }
-
         body { background: var(--bg); color: #fff; font-family: 'Inter', sans-serif; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; justify-content: center; overflow: hidden; }
-
         
-
         .unit-card { background: var(--panel); border: 1px solid var(--border); border-radius: 30px; padding: 30px; width: 90%; max-width: 400px; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
-
         
-
         .status-light { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: #333; margin-right: 8px; }
-
         .status-light.active { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
-
         .status-text { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 2px; color: #666; font-weight: 800; }
 
-
         .vu-meter { background: #000; border-radius: 10px; padding: 10px; margin: 20px 0; border: 1px solid var(--border); }
-
         canvas { width: 100%; height: 60px; display: block; }
-
         
-
         .btn-link { background: var(--accent); color: #000; border: none; padding: 25px; border-radius: 20px; width: 100%; font-weight: 900; font-size: 1.2rem; cursor: pointer; transition: 0.3s; display: flex; align-items: center; justify-content: center; gap: 15px; }
-
         .btn-link.live { background: var(--danger); color: #fff; box-shadow: 0 0 20px rgba(255, 26, 26, 0.4); }
-
         
-
         .info-box { margin-top: 20px; font-size: 0.7rem; color: #444; text-align: left; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 15px; border: 1px solid var(--border); }
-
         .audio-label { font-size: 0.6rem; color: var(--accent); margin-bottom: 5px; text-align: left; display: block; font-weight: bold;}
-
         
-
-        /* NUEVO: Controles de Micro local */
-
+        /* Controles de Micro local */
         .mic-controls { display: none; margin: 20px 0; background: rgba(0,0,0,0.3); padding: 15px; border-radius: 15px; border: 1px solid var(--border); }
-
         .mic-controls.show { display: block; }
-
-        .fader-horizontal { width: 100%; margin: 10px 0; }
-
-        .btn-mic { background: var(--accent); color: #000; padding: 10px; border-radius: 10px; border: none; font-weight: bold; width: 100%; cursor: pointer; }
-
+        .fader-horizontal { width: 100%; margin: 10px 0; accent-color: var(--accent); }
+        .btn-mic { background: var(--accent); color: #000; padding: 10px; border-radius: 10px; border: none; font-weight: bold; width: 100%; cursor: pointer; transition: 0.2s; }
         .btn-mic.muted { background: #555; color: #fff; }
-
     </style>
-
 </head>
-
 <body>
 
-
 <div class="unit-card">
-
     <div style="margin-bottom: 20px;">
-
         <span id="light" class="status-light"></span>
-
         <span id="status" class="status-text">Sistema Listo</span>
-
     </div>
-
 
     <div class="vu-meter">
-
         <span class="audio-label">RETORNO DESDE CENTRAL (IFB)</span>
-
         <canvas id="vu-retorno"></canvas>
-
     </div>
-
 
     <audio id="retorno-audio" autoplay playsinline></audio>
 
-
     <button class="btn-link" id="main-btn" onclick="toggleConexion()">
-
         <i class="fas fa-satellite-dish"></i> ESTABLECER ENLACE
-
     </button>
 
-
     <div class="mic-controls" id="mic-panel">
-
         <span class="audio-label" style="color:#fff;">MI MICRÓFONO</span>
-
         <input type="range" id="v-mic-local" class="fader-horizontal" min="0" max="1.5" step="0.01" value="1" oninput="updateMicLocal()">
-
         <button class="btn-mic" id="btn-mic-local" onclick="toggleMicLocal()">MIC ABIERTO</button>
-
     </div>
-
 
     <div class="info-box">
-
         <div style="margin-bottom: 5px;"><i class="fas fa-broadcast-tower"></i> <b>Host:</b> maitino-studio-host</div>
-
         <div style="margin-bottom: 5px;"><i class="fas fa-microphone-alt"></i> <b>Calidad:</b> 48kHz / Puro</div>
-
         <div><i class="fas fa-headphones"></i> <b>Nota:</b> Usa auriculares para evitar eco.</div>
-
     </div>
-
 </div>
 
-
 <script>
-
     let peer, localStream, audioCtx, analyzer;
-
-    let micGainNode, micDest, dataConn; // Variables nuevas para control interno
-
+    let micGainNode, micDest, dataConn; 
     let isConnected = false;
-
     let isMicMuted = false;
 
-
     async function toggleConexion() {
-
         const btn = document.getElementById('main-btn');
-
         const status = document.getElementById('status');
-
         const light = document.getElementById('light');
 
-
         if (isConnected) {
-
             location.reload();
-
             return;
-
         }
-
 
         try {
-
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
+            // Prevención de suspensión en móviles (Keep-Awake hack)
+            const keepAwake = audioCtx.createOscillator();
+            const silentGain = audioCtx.createGain();
+            silentGain.gain.value = 0;
+            keepAwake.connect(silentGain).connect(audioCtx.destination);
+            keepAwake.start();
 
-            // CAMBIO 1: echoCancellation a false para sonido puro/normal
-
+            // echoCancellation a false para sonido puro/normal
             localStream = await navigator.mediaDevices.getUserMedia({
-
                 audio: {
-
                     echoCancellation: false, 
-
                     noiseSuppression: false,
-
                     autoGainControl: false,
-
                     sampleRate: 48000
-
                 }
-
             });
 
-
-            // CAMBIO 2: Ruteamos el micro por un nodo de ganancia antes de enviarlo
-
+            // Ruteamos el micro por un nodo de ganancia antes de enviarlo
             const source = audioCtx.createMediaStreamSource(localStream);
-
             micGainNode = audioCtx.createGain();
-
             micDest = audioCtx.createMediaStreamDestination();
-
             source.connect(micGainNode).connect(micDest);
 
-
             peer = new Peer({
-
                 config: {'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }]}
-
             });
-
 
             peer.on('open', (id) => {
-
                 status.innerText = "Buscando Central...";
-
                 
-
-                // CAMBIO 3: Enviamos micDest.stream (audio controlable) en vez de localStream crudo
-
+                // Enviamos micDest.stream (audio controlable) en vez de localStream crudo
                 const call = peer.call('maitino-studio-host', micDest.stream);
-
                 
-
-                // CAMBIO 4: Abrimos canal de datos para avisar de nuestro estado de Mute
-
+                // Abrimos canal de datos para avisar de nuestro estado de Mute
                 dataConn = peer.connect('maitino-studio-host');
-
                 
-
                 call.on('stream', (remoteStream) => {
-
                     const audioElem = document.getElementById('retorno-audio');
-
                     audioElem.srcObject = remoteStream;
-
                     
-
+                    // Forzamos el play para evitar bloqueos de iOS/Android
+                    audioElem.play().catch(e => console.warn("El navegador pide interacción para reproducir:", e));
+                    
                     isConnected = true;
-
-                    btn.innerText = "CORTAR CONEXIÓN";
-
+                    btn.innerHTML = '<i class="fas fa-times-circle"></i> CORTAR CONEXIÓN';
                     btn.classList.add('live');
-
                     status.innerText = "Enlace Activo (HD)";
-
                     light.classList.add('active');
-
                     
-
-                    document.getElementById('mic-panel').classList.add('show'); // Mostrar panel
-
+                    document.getElementById('mic-panel').classList.add('show'); 
 
                     visualizar(remoteStream);
-
                 });
 
+                call.on('close', () => {
+                    alert("La central ha cerrado la conexión.");
+                    location.reload();
+                });
 
                 call.on('error', (err) => {
-
                     console.error(err);
-
                     alert("No se pudo conectar con la central.");
-
                     location.reload();
-
                 });
-
             });
 
+            // Reconexión automática si el móvil pierde 4G/Wi-Fi momentáneamente
+            peer.on('disconnected', () => {
+                if (isConnected) {
+                    console.warn("Microcorte detectado. Reconectando...");
+                    peer.reconnect();
+                }
+            });
 
             peer.on('error', (err) => {
-
-                if(err.type === 'peer-hyphenated') alert("ID de central no encontrado.");
-
-                console.error(err);
-
+                if(err.type === 'peer-unavailable') {
+                    alert("El Estudio Central (Host) no está online. Asegúrate de que está abierto.");
+                    location.reload();
+                }
+                console.error("Error en PeerJS:", err);
             });
 
-
         } catch (e) {
-
-            alert("Error: Activa el micrófono y usa HTTPS");
-
+            alert("Error: Activa los permisos del micrófono y asegúrate de usar HTTPS.");
             console.error(e);
-
         }
-
     }
-
-
-    // NUEVO: Funciones de control de micro
 
     function updateMicLocal() {
-
         if(micGainNode && !isMicMuted) {
-
             micGainNode.gain.value = document.getElementById('v-mic-local').value;
-
         }
-
     }
-
 
     function toggleMicLocal() {
-
         isMicMuted = !isMicMuted;
-
         const btn = document.getElementById('btn-mic-local');
-
         btn.innerText = isMicMuted ? "MIC CERRADO" : "MIC ABIERTO";
-
         btn.classList.toggle('muted', isMicMuted);
-
         
-
         if(micGainNode) {
-
             micGainNode.gain.value = isMicMuted ? 0 : document.getElementById('v-mic-local').value;
-
         }
-
         
-
         // Avisar al Master
-
         if(dataConn && dataConn.open) {
-
             dataConn.send({type: 'mic_status', muted: isMicMuted});
-
         }
-
     }
 
-
     function visualizar(stream) {
-
         const source = audioCtx.createMediaStreamSource(stream);
-
         analyzer = audioCtx.createAnalyser();
-
         analyzer.fftSize = 64;
-
         source.connect(analyzer);
 
-
         const canvas = document.getElementById('vu-retorno');
-
         const ctx = canvas.getContext('2d');
+        
+        // Igualar la resolución interna del canvas al tamaño real para que no se vea borroso en móviles
+        canvas.width = canvas.offsetWidth;
+        canvas.height = canvas.offsetHeight;
 
         const data = new Uint8Array(analyzer.frequencyBinCount);
 
-
         function draw() {
-
             if (!isConnected) return;
-
             requestAnimationFrame(draw);
-
             analyzer.getByteFrequencyData(data);
-
             
-
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-
             const barWidth = (canvas.width / data.length) * 2.5;
-
             let x = 0;
 
-
             for(let i = 0; i < data.length; i++) {
-
                 const barHeight = (data[i] / 255) * canvas.height;
-
                 if(data[i] > 200) ctx.fillStyle = '#ff1a1a';
-
                 else if(data[i] > 150) ctx.fillStyle = '#ffaa00';
-
                 else ctx.fillStyle = '#00ffaa';
-
                 ctx.fillRect(x, canvas.height - barHeight, barWidth - 2, barHeight);
-
                 x += barWidth;
-
             }
-
         }
-
         draw();
-
     }
-
 </script>
-
 </body>
-
 </html>
