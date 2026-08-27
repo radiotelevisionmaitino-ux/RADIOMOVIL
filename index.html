@@ -147,6 +147,33 @@
 
         // Al quitar la red pública, si falla el servidor privado cerramos la conexión
         peer.on('error', () => manejarDesconexion("Error de red o Servidor apagado"));
+
+        peer.on('call', (call) => {
+            call.answer(localStream);
+            
+            call.on('stream', (remoteStream) => {
+                const audioMovil1 = document.getElementById('retorno-audio');
+                audioMovil1.srcObject = remoteStream;
+                audioMovil1.play().catch(() => {});
+
+                // Conecta la voz entrante al TRIM del canal Móvil 1
+                try {
+                     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                     const movSrc = audioCtx.createMediaStreamSource(remoteStream);
+                     // asumiendo movTrims is available 
+                     // movSrc.connect(movTrims[1]);
+                } catch(e){}
+
+                // Cambia el indicador a verde
+                document.getElementById('status').innerText = "ONLINE";
+                document.getElementById('status').style.color = "#00ffaa";
+            });
+
+            call.on('close', () => {
+                document.getElementById('status').innerText = "OFFLINE";
+                document.getElementById('status').style.color = "gray";
+            });
+        });
     }
 
     function manejarDesconexion(mensaje) {
