@@ -29,8 +29,13 @@
         
         .mic-controls { display: none; margin: 20px 0; background: rgba(0,0,0,0.3); padding: 15px; border-radius: 15px; border: 1px solid var(--border); }
         .mic-controls.show { display: block; }
-        .btn-mic { background: var(--accent); color: #000; padding: 15px; border-radius: 10px; border: none; font-weight: bold; width: 100%; cursor: pointer; transition: 0.2s; font-size: 1rem; }
+        .btn-mic { background: var(--accent); color: #000; padding: 15px; border-radius: 10px; border: none; font-weight: bold; width: 100%; cursor: pointer; transition: 0.2s; font-size: 1rem; margin-bottom: 15px; }
         .btn-mic.muted { background: #555; color: #fff; }
+
+        /* Estilo faders minimalistas */
+        .slider-group { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 0.65rem; color: #aaa; }
+        input[type="range"] { -webkit-appearance: none; width: 70%; height: 4px; background: #333; border-radius: 2px; outline: none; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; background: var(--accent); border-radius: 50%; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -42,115 +47,77 @@
     </div>
 
     <div class="vu-meter">
-        <span class="audio-label">RETORNO ESTUDIO</span>
+        <span class="audio-label">ESPECTRO SEÑAL RETORNO</span>
         <canvas id="vu-retorno"></canvas>
     </div>
-
-    <!-- Reproductor nativo para evitar bloqueos de Web Audio API en móviles -->
+    
     <audio id="retorno-audio" autoplay playsinline></audio>
 
-    <button class="btn-link" id="main-btn" onclick="toggleConexion()">
+    <button class="btn-link" id="main-btn" onclick="iniciarConexion()">
         <i class="fas fa-satellite-dish"></i> ESTABLECER ENLACE
     </button>
 
     <div class="mic-controls" id="mic-panel">
-        <span class="audio-label" style="color:#fff; margin-bottom: 10px;">MI MICRÓFONO</span>
         <button class="btn-mic" id="btn-mic-local" onclick="toggleMicLocal()">MIC ABIERTO</button>
+        
+        <div class="slider-group">
+            <span>VOL. MIC</span>
+            <input type="range" id="vol-mic" min="0" max="2" step="0.1" value="1" oninput="actualizarVolumenes()">
+        </div>
+        <div class="slider-group">
+            <span>RETORNO</span>
+            <input type="range" id="vol-retorno" min="0" max="1" step="0.05" value="0.8" oninput="actualizarVolumenes()">
+        </div>
     </div>
 
     <div class="info-box">
-        <div style="margin-bottom: 5px;"><i class="fas fa-server"></i> <b>Host:</b> maitino-studio-host-v2</div>
+        <div style="margin-bottom: 5px;"><i class="fas fa-server"></i> <b id="host-info">Host: maitino-studio-host-v2</b></div>
         <div style="margin-bottom: 5px;"><i class="fas fa-bolt"></i> <b>Modo:</b> Conexión Directa (Baja Latencia)</div>
         <div><i class="fas fa-headphones"></i> <b>Auriculares:</b> Conectados obligatoriamente.</div>
     </div>
 </div>
 
 <script>
-    let peer;
-    let localStream;
-    let activeCall; 
-    let isConnected = false;
-    let isMicMuted = false;
+    const HOST_PRIVADO = 'maitino-studio-host-v2';
+    const HOST_PUBLICO = 'maitino-studio-host-public-v2';
 
-    const TARGET_HOST = 'maitino-studio-host-v2';
+    let peer, localStream, activeCall; 
+    let isConnected = false, isMicMuted = false;
+    
+    // Nodos de audio para procesar el micrófono antes de enviarlo
+    let localAudioCtx, micSource, micGain, micDest;
 
-    async function toggleConexion() {
-        if (isConnected || peer) {
-            window.location.reload();
-            return;
-        }
+    function actualizarVolumenes() {
+        if (micGain) micGain.gain.value = document.getElementById('vol-mic').value;
+        document.getElementById('retorno-audio').volume = document.getElementById('vol-retorno').value;
+    }
 
+    async function iniciarConexion() {
+        if (isConnected || peer) { window.location.reload(); return; }
+        
         const status = document.getElementById('status');
         const light = document.getElementById('light');
-        const btn = document.getElementById('main-btn');
-
         status.innerText = "Abriendo micrófono...";
         light.className = "status-light";
 
         try {
-            // 1. Captura de audio completamente cruda e inmediata
-            localStream = await navigator.mediaDevices.getUserMedia({
-                audio: { 
-                    echoCancellation: false, 
-                    noiseSuppression: false, 
-                    autoGainControl: false, 
-                    sampleRate: 48000 
-                }
+            // Captura cruda
+            const rawStream = await navigator.mediaDevices.getUserMedia({
+                audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, sampleRate: 48000 }
             });
 
-            status.innerText = "Contactando servidor...";
+            // Empaquetado y control de ganancia (La solución para que el estudio te escuche)
+            localAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            micSource = localAudioCtx.createMediaStreamSource(rawStream);
+            micGain = localAudioCtx.createGain();
+            micDest = localAudioCtx.createMediaStreamDestination();
             
-            // 2. Conexión simplificada
-            peer = new Peer({
-                host: 'maitino-peer-server.onrender.com',
-                port: 443,
-                secure: true,
-                config: {
-                    'iceServers': [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:global.stun.twilio.com:3478' }
-                    ]
-                }
-            });
+            micSource.connect(micGain);
+            micGain.connect(micDest);
+            localStream = micDest.stream; // Este es el stream procesado que enviaremos
 
-            peer.on('open', (id) => {
-                status.innerText = "Llamando al estudio...";
-                
-                // 3. Llamada directa con el stream nativo
-                activeCall = peer.call(TARGET_HOST, localStream);
-                
-                activeCall.on('stream', (remoteStream) => {
-                    isConnected = true;
-                    
-                    // 4. Reproducción Segura
-                    const audioElem = document.getElementById('retorno-audio');
-                    audioElem.srcObject = remoteStream;
-                    
-                    // Forzar Play
-                    audioElem.play().catch(e => console.warn("Toque la pantalla para escuchar el retorno."));
-
-                    // Actualizar UI
-                    btn.innerHTML = '<i class="fas fa-times-circle"></i> CORTAR ENLACE';
-                    btn.classList.add('live');
-                    status.innerText = "EN EL AIRE";
-                    light.className = "status-light active";
-                    document.getElementById('mic-panel').classList.add('show'); 
-                    
-                    // 5. Iniciar Analizador Visual Pasivo
-                    iniciarVisualizador(remoteStream);
-                });
-
-                activeCall.on('close', () => manejarDesconexion("Estudio desconectado"));
-                activeCall.on('error', () => manejarDesconexion("Fallo en la llamada"));
-            });
-
-            peer.on('error', (err) => {
-                manejarDesconexion("Error de red o Servidor apagado");
-            });
-
-            peer.on('disconnected', () => {
-                peer.reconnect();
-            });
+            actualizarVolumenes();
+            conectarRed(false);
 
         } catch (e) {
             alert("Acceso denegado al micrófono.");
@@ -158,18 +125,71 @@
         }
     }
 
+    function conectarRed(usarPublico = false) {
+        const status = document.getElementById('status');
+        document.getElementById('host-info').innerHTML = `Host: ${usarPublico ? HOST_PUBLICO : HOST_PRIVADO}`;
+        status.innerText = usarPublico ? "Conectando red pública..." : "Contactando servidor...";
+
+        let config = { config: { 'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }] } };
+        if (!usarPublico) {
+            config.host = 'maitino-peer-server.onrender.com';
+            config.port = 443;
+            config.secure = true;
+        }
+
+        peer = new Peer(config);
+
+        peer.on('open', () => {
+            status.innerText = "Llamando al estudio...";
+            let target = usarPublico ? HOST_PUBLICO : HOST_PRIVADO;
+            
+            // Llamada enviando el stream procesado con volumen controlado
+            activeCall = peer.call(target, localStream);
+            
+            activeCall.on('stream', (remoteStream) => {
+                isConnected = true;
+                const audioElem = document.getElementById('retorno-audio');
+                audioElem.srcObject = remoteStream;
+                audioElem.play().catch(e => console.warn("Toque la pantalla para escuchar el retorno."));
+
+                document.getElementById('main-btn').innerHTML = '<i class="fas fa-times-circle"></i> CORTAR ENLACE';
+                document.getElementById('main-btn').classList.add('live');
+                status.innerText = "EN EL AIRE";
+                document.getElementById('light').className = "status-light active";
+                document.getElementById('mic-panel').classList.add('show');
+                
+                iniciarVisualizador(remoteStream);
+            });
+
+            activeCall.on('close', () => manejarDesconexion("Estudio desconectado"));
+            activeCall.on('error', () => fallbackConexion(usarPublico));
+        });
+
+        peer.on('error', () => fallbackConexion(usarPublico));
+    }
+
+    function fallbackConexion(usarPublico) {
+        if (peer) peer.destroy();
+        if (!usarPublico) {
+            document.getElementById('status').innerText = "Fallo Render. Red pública...";
+            conectarRed(true);
+        } else {
+            manejarDesconexion("Sin conexión. Reintentando...");
+        }
+    }
+
     function manejarDesconexion(mensaje) {
         document.getElementById('status').innerText = mensaje;
         document.getElementById('light').className = "status-light error";
-        setTimeout(() => window.location.reload(), 3000);
+        setTimeout(() => window.location.reload(), 4000);
     }
 
     function toggleMicLocal() {
         if (!localStream) return;
         isMicMuted = !isMicMuted;
         
-        // Apagado físico del track de audio (0 latencia, 0 fallos)
-        localStream.getAudioTracks()[0].enabled = !isMicMuted;
+        // Muteo cortando la ganancia local a 0 para no destruir la pista
+        micGain.gain.value = isMicMuted ? 0 : document.getElementById('vol-mic').value;
         
         const btn = document.getElementById('btn-mic-local');
         btn.innerText = isMicMuted ? "MIC CERRADO" : "MIC ABIERTO";
@@ -178,12 +198,11 @@
 
     function iniciarVisualizador(stream) {
         try {
-            // Se usa el AudioContext SOLO para dibujar, NUNCA para emitir sonido
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const source = audioCtx.createMediaStreamSource(stream);
             const analyzer = audioCtx.createAnalyser();
-            analyzer.fftSize = 64;
-            source.connect(analyzer); // IMPORTANTE: No se conecta a audioCtx.destination
+            analyzer.fftSize = 256; // Mayor resolución
+            source.connect(analyzer);
 
             const canvas = document.getElementById('vu-retorno');
             const ctx = canvas.getContext('2d');
@@ -197,21 +216,28 @@
                 analyzer.getByteFrequencyData(data);
                 
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
-                const barWidth = (canvas.width / data.length) * 2.5;
+                
+                // Líneas más finitas y juntas (estilo PRO)
+                const barWidth = canvas.width / data.length; 
                 let x = 0;
 
                 for(let i = 0; i < data.length; i++) {
                     const barHeight = (data[i] / 255) * canvas.height;
-                    if(data[i] > 200) ctx.fillStyle = '#ff1a1a';
-                    else if(data[i] > 150) ctx.fillStyle = '#ffaa00';
-                    else ctx.fillStyle = '#00ffaa';
-                    ctx.fillRect(x, canvas.height - barHeight, barWidth - 2, barHeight);
+                    
+                    let grad = ctx.createLinearGradient(0, canvas.height, 0, 0);
+                    grad.addColorStop(0, '#00ffaa');
+                    grad.addColorStop(0.7, '#ffaa00');
+                    grad.addColorStop(1, '#ff1a1a');
+                    ctx.fillStyle = grad;
+                    
+                    // El "- 1" deja un hueco minúsculo entre barras
+                    ctx.fillRect(x, canvas.height - barHeight, Math.max(1, barWidth - 1), barHeight);
                     x += barWidth;
                 }
             }
             draw();
         } catch (e) {
-            console.log("Visualizador omitido por restricciones del navegador.");
+            console.log("Visualizador omitido.");
         }
     }
 </script>
