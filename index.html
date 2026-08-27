@@ -61,34 +61,25 @@
         <button class="btn-mic" id="btn-mic-local" onclick="toggleMicLocal()">MIC ABIERTO</button>
         
         <div class="slider-group">
-            <span>VOL. MIC</span>
-            <input type="range" id="vol-mic" min="0" max="2" step="0.1" value="1" oninput="actualizarVolumenes()">
-        </div>
-        <div class="slider-group">
-            <span>RETORNO</span>
-            <input type="range" id="vol-retorno" min="0" max="1" step="0.05" value="0.8" oninput="actualizarVolumenes()">
+            <span>VOL. RETORNO</span>
+            <input type="range" id="vol-retorno" min="0" max="1" step="0.05" value="0.8" oninput="actualizarVolumenRetorno()">
         </div>
     </div>
 
     <div class="info-box">
         <div style="margin-bottom: 5px;"><i class="fas fa-server"></i> <b id="host-info">Host: maitino-studio-host-v2</b></div>
-        <div style="margin-bottom: 5px;"><i class="fas fa-bolt"></i> <b>Modo:</b> Conexión Directa (Baja Latencia)</div>
+        <div style="margin-bottom: 5px;"><i class="fas fa-bolt"></i> <b>Modo:</b> Conexión Directa Privada (Cruda)</div>
         <div><i class="fas fa-headphones"></i> <b>Auriculares:</b> Conectados obligatoriamente.</div>
     </div>
 </div>
 
 <script>
     const HOST_PRIVADO = 'maitino-studio-host-v2';
-    const HOST_PUBLICO = 'maitino-studio-host-public-v2';
 
     let peer, localStream, activeCall; 
     let isConnected = false, isMicMuted = false;
-    
-    // Nodos de audio para procesar el micrófono antes de enviarlo
-    let localAudioCtx, micSource, micGain, micDest;
 
-    function actualizarVolumenes() {
-        if (micGain) micGain.gain.value = document.getElementById('vol-mic').value;
+    function actualizarVolumenRetorno() {
         document.getElementById('retorno-audio').volume = document.getElementById('vol-retorno').value;
     }
 
@@ -101,23 +92,13 @@
         light.className = "status-light";
 
         try {
-            // Captura cruda
-            const rawStream = await navigator.mediaDevices.getUserMedia({
+            // Captura de audio directa sin pasar por un AudioContext local
+            localStream = await navigator.mediaDevices.getUserMedia({
                 audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, sampleRate: 48000 }
             });
 
-            // Empaquetado y control de ganancia (La solución para que el estudio te escuche)
-            localAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            micSource = localAudioCtx.createMediaStreamSource(rawStream);
-            micGain = localAudioCtx.createGain();
-            micDest = localAudioCtx.createMediaStreamDestination();
-            
-            micSource.connect(micGain);
-            micGain.connect(micDest);
-            localStream = micDest.stream; // Este es el stream procesado que enviaremos
-
-            actualizarVolumenes();
-            conectarRed(false);
+            actualizarVolumenRetorno();
+            conectarRed();
 
         } catch (e) {
             alert("Acceso denegado al micrófono.");
@@ -125,26 +106,25 @@
         }
     }
 
-    function conectarRed(usarPublico = false) {
+    function conectarRed() {
         const status = document.getElementById('status');
-        document.getElementById('host-info').innerHTML = `Host: ${usarPublico ? HOST_PUBLICO : HOST_PRIVADO}`;
-        status.innerText = usarPublico ? "Conectando red pública..." : "Contactando servidor...";
+        document.getElementById('host-info').innerHTML = `Host: ${HOST_PRIVADO}`;
+        status.innerText = "Contactando servidor...";
 
-        let config = { config: { 'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }] } };
-        if (!usarPublico) {
-            config.host = 'maitino-peer-server.onrender.com';
-            config.port = 443;
-            config.secure = true;
-        }
+        // Configuración EXCLUSIVA para el servidor privado de Render
+        let config = { 
+            host: 'maitino-peer-server.onrender.com',
+            port: 443,
+            secure: true
+        };
 
         peer = new Peer(config);
 
         peer.on('open', () => {
             status.innerText = "Llamando al estudio...";
-            let target = usarPublico ? HOST_PUBLICO : HOST_PRIVADO;
             
-            // Llamada enviando el stream procesado con volumen controlado
-            activeCall = peer.call(target, localStream);
+            // Llamada enviando el stream crudo directo del micrófono
+            activeCall = peer.call(HOST_PRIVADO, localStream);
             
             activeCall.on('stream', (remoteStream) => {
                 isConnected = true;
@@ -162,20 +142,11 @@
             });
 
             activeCall.on('close', () => manejarDesconexion("Estudio desconectado"));
-            activeCall.on('error', () => fallbackConexion(usarPublico));
+            activeCall.on('error', () => manejarDesconexion("Fallo en la llamada"));
         });
 
-        peer.on('error', () => fallbackConexion(usarPublico));
-    }
-
-    function fallbackConexion(usarPublico) {
-        if (peer) peer.destroy();
-        if (!usarPublico) {
-            document.getElementById('status').innerText = "Fallo Render. Red pública...";
-            conectarRed(true);
-        } else {
-            manejarDesconexion("Sin conexión. Reintentando...");
-        }
+        // Al quitar la red pública, si falla el servidor privado cerramos la conexión
+        peer.on('error', () => manejarDesconexion("Error de red o Servidor apagado"));
     }
 
     function manejarDesconexion(mensaje) {
@@ -188,8 +159,8 @@
         if (!localStream) return;
         isMicMuted = !isMicMuted;
         
-        // Muteo cortando la ganancia local a 0 para no destruir la pista
-        micGain.gain.value = isMicMuted ? 0 : document.getElementById('vol-mic').value;
+        // Muteo bloqueando nativamente la pista de audio capturada
+        localStream.getAudioTracks()[0].enabled = !isMicMuted;
         
         const btn = document.getElementById('btn-mic-local');
         btn.innerText = isMicMuted ? "MIC CERRADO" : "MIC ABIERTO";
@@ -201,7 +172,7 @@
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const source = audioCtx.createMediaStreamSource(stream);
             const analyzer = audioCtx.createAnalyser();
-            analyzer.fftSize = 256; // Mayor resolución
+            analyzer.fftSize = 256; 
             source.connect(analyzer);
 
             const canvas = document.getElementById('vu-retorno');
@@ -217,7 +188,6 @@
                 
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 
-                // Líneas más finitas y juntas (estilo PRO)
                 const barWidth = canvas.width / data.length; 
                 let x = 0;
 
@@ -230,7 +200,6 @@
                     grad.addColorStop(1, '#ff1a1a');
                     ctx.fillStyle = grad;
                     
-                    // El "- 1" deja un hueco minúsculo entre barras
                     ctx.fillRect(x, canvas.height - barHeight, Math.max(1, barWidth - 1), barHeight);
                     x += barWidth;
                 }
