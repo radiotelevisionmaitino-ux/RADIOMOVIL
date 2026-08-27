@@ -51,6 +51,7 @@
         <canvas id="vu-retorno"></canvas>
     </div>
     
+    <!-- Elemento de audio nativo para recibir el retorno del Máster -->
     <audio id="retorno-audio" autoplay playsinline></audio>
 
     <button class="btn-link" id="main-btn" onclick="iniciarConexion()">
@@ -92,7 +93,7 @@
         light.className = "status-light";
 
         try {
-            // Captura de audio directa sin pasar por un AudioContext local
+            // Captura de audio directa (raw) para máxima compatibilidad móvil
             localStream = await navigator.mediaDevices.getUserMedia({
                 audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, sampleRate: 48000 }
             });
@@ -101,7 +102,7 @@
             conectarRed();
 
         } catch (e) {
-            alert("Acceso denegado al micrófono.");
+            alert("Acceso denegado al micrófono. Revisa los permisos de tu navegador.");
             window.location.reload();
         }
     }
@@ -111,7 +112,7 @@
         document.getElementById('host-info').innerHTML = `Host: ${HOST_PRIVADO}`;
         status.innerText = "Contactando servidor...";
 
-        // Configuración EXCLUSIVA para el servidor privado de Render
+        // Conexión exclusiva al servidor privado
         let config = { 
             host: 'maitino-peer-server.onrender.com',
             port: 443,
@@ -123,15 +124,17 @@
         peer.on('open', () => {
             status.innerText = "Llamando al estudio...";
             
-            // Llamada enviando el stream crudo directo del micrófono
+            // Inicia la llamada enviando la voz de la Móvil hacia el Máster
             activeCall = peer.call(HOST_PRIVADO, localStream);
             
+            // Recibe la respuesta (el audio de retorno desde el Máster)
             activeCall.on('stream', (remoteStream) => {
                 isConnected = true;
                 const audioElem = document.getElementById('retorno-audio');
                 audioElem.srcObject = remoteStream;
                 audioElem.play().catch(e => console.warn("Toque la pantalla para escuchar el retorno."));
 
+                // Actualizar interfaz
                 document.getElementById('main-btn').innerHTML = '<i class="fas fa-times-circle"></i> CORTAR ENLACE';
                 document.getElementById('main-btn').classList.add('live');
                 status.innerText = "EN EL AIRE";
@@ -145,35 +148,7 @@
             activeCall.on('error', () => manejarDesconexion("Fallo en la llamada"));
         });
 
-        // Al quitar la red pública, si falla el servidor privado cerramos la conexión
         peer.on('error', () => manejarDesconexion("Error de red o Servidor apagado"));
-
-        peer.on('call', (call) => {
-            call.answer(localStream);
-            
-            call.on('stream', (remoteStream) => {
-                const audioMovil1 = document.getElementById('retorno-audio');
-                audioMovil1.srcObject = remoteStream;
-                audioMovil1.play().catch(() => {});
-
-                // Conecta la voz entrante al TRIM del canal Móvil 1
-                try {
-                     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                     const movSrc = audioCtx.createMediaStreamSource(remoteStream);
-                     // asumiendo movTrims is available 
-                     // movSrc.connect(movTrims[1]);
-                } catch(e){}
-
-                // Cambia el indicador a verde
-                document.getElementById('status').innerText = "ONLINE";
-                document.getElementById('status').style.color = "#00ffaa";
-            });
-
-            call.on('close', () => {
-                document.getElementById('status').innerText = "OFFLINE";
-                document.getElementById('status').style.color = "gray";
-            });
-        });
     }
 
     function manejarDesconexion(mensaje) {
@@ -186,7 +161,7 @@
         if (!localStream) return;
         isMicMuted = !isMicMuted;
         
-        // Muteo bloqueando nativamente la pista de audio capturada
+        // Muteo físico de la pista (100% seguro)
         localStream.getAudioTracks()[0].enabled = !isMicMuted;
         
         const btn = document.getElementById('btn-mic-local');
